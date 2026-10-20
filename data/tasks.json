@@ -1,0 +1,521 @@
+{
+  "workshop": {
+    "title": "Taller de gobierno y calidad de datos",
+    "eyebrow": "Unity Catalog · Data Classification · Data Quality · DQX Studio",
+    "subtitle": "Siete tareas prácticas para encontrar datos sensibles, vigilar la calidad de las tablas y crear reglas de calidad sin código. Yo les marco cada paso y ustedes lo ejecutan en su propio workspace de Free Edition.",
+    "catalog": "taller_gobierno",
+    "setupNotebook": "notebooks/01_setup_taller.py",
+    "estimatedMinutes": 255,
+    "dataNotice": "Todos los datos de este taller son sintéticos. Ninguna persona, cédula, tarjeta ni cuenta es real."
+  },
+  "tasks": [
+    {
+      "id": "preparar",
+      "index": 1,
+      "title": "Preparar el catálogo",
+      "subtitle": "Un banco regional sintético, con errores de calidad sembrados a propósito.",
+      "product": "Notebooks · Unity Catalog",
+      "icon": "🏦",
+      "color": "#C8321E",
+      "estimatedMinutes": 15,
+      "mode": "Notebook",
+      "description": "Creamos el catálogo `taller_gobierno` y cinco tablas: clientes, cuentas, transacciones, préstamos y bitácora de contactos. Los datos son deterministas, así que todos los participantes obtienen las mismas cifras. Los errores de calidad llevan porcentajes conocidos para que podamos comprobar que cada herramienta los encuentra.",
+      "outcomes": [
+        "Catálogo `taller_gobierno` con el esquema `banco` y cinco tablas.",
+        "Una tabla de errores sembrados que usaremos como respuesta correcta en las tareas 3, 4 y 6.",
+        "Un Git Folder con el repositorio del taller dentro de su workspace."
+      ],
+      "prerequisites": [
+        "Una cuenta de Databricks Free Edition (gratis, se crea con un correo en databricks.com/learn/free-edition).",
+        "Cómputo serverless: es el único que ofrece Free Edition y todos los notebooks lo usan."
+      ],
+      "sections": [
+        {
+          "title": "A. Clonar el repositorio en un Git Folder",
+          "steps": [
+            "En el menú izquierdo abran **Workspace**.",
+            "Seleccionen **Create > Git folder**.",
+            "En **Git repository URL** peguen `https://github.com/scaravacap/governance-dq-workshop`.",
+            "Dejen el proveedor en **GitHub** y seleccionen **Create Git folder**.",
+            "Abran la carpeta `notebooks` y confirmen que ven los archivos del 01 al 06."
+          ],
+          "note": "Si Free Edition no les deja crear un Git Folder, importen los notebooks a mano: descarguen cada archivo `.py` de GitHub con **Download raw file** y súbanlos con **Workspace > Import**."
+        },
+        {
+          "title": "B. Ejecutar 01_setup_taller",
+          "steps": [
+            "Abran `notebooks/01_setup_taller`.",
+            "En el selector de cómputo de arriba a la derecha elijan **Serverless**.",
+            "Dejen los widgets `catalogo = taller_gobierno` y `esquema = banco`.",
+            "Seleccionen **Run all**. Tarda entre 2 y 3 minutos.",
+            "Al final del notebook revisen las consultas de verificación: deben ver 5 tablas con los conteos de la tabla de abajo."
+          ],
+          "expected": "clientes 5.000 filas (30 con `id_cliente` repetido), cuentas 7.500, transacciones 60.000, préstamos 3.000 (500 préstamos en 6 cortes mensuales) y bitácora_contactos 2.000."
+        },
+        {
+          "title": "C. Conocer los errores sembrados",
+          "intro": "Estos son los errores que vamos a perseguir durante el taller. Guarden la tabla, la vamos a usar para comprobar resultados.",
+          "steps": [
+            "`cedula` nula o con el texto `N/A`: 169 filas.",
+            "`correo` sin arroba: 92 filas.",
+            "`pais` con el código inválido `XX`: 52 filas.",
+            "`ingreso_mensual` negativo: 53 filas.",
+            "`fecha_alta` en el futuro: 29 filas.",
+            "`id_cliente` repetido: 60 filas (30 identificadores, cada uno dos veces).",
+            "En `prestamos`: `saldo_capital` mayor al monto desembolsado (1%), tasa en cero (1%) y `pais` nulo (1%). Además, un salto del índice de mora en el último corte (de menos del 1% a cerca del 9%), que es un incidente de negocio y no un error de fila."
+          ],
+          "code": "SELECT * FROM taller_gobierno.banco.clientes LIMIT 20",
+          "codeLabel": "SQL para mirar los datos"
+        }
+      ]
+    },
+    {
+      "id": "clasificacion",
+      "index": 2,
+      "title": "Data Classification: encontrar y etiquetar datos sensibles",
+      "subtitle": "De columnas con nombres ambiguos a etiquetas `class.*` y máscaras que se aplican solas.",
+      "product": "Unity Catalog · Etiquetas · Máscaras",
+      "icon": "🏷️",
+      "color": "#2F6F5E",
+      "estimatedMinutes": 40,
+      "mode": "Notebook + Interfaz",
+      "description": "Una política de acceso escrita sobre el nombre de una columna se rompe cuando alguien crea `correo_electronico` en vez de `email`. La política escrita sobre una etiqueta no. En esta tarea descubrimos qué columnas contienen datos personales, las etiquetamos con `class.*` y aplicamos una máscara a todas con una sola función.",
+      "outcomes": [
+        "Etiquetas `class.email_address`, `class.phone_number`, `class.credit_card`, `class.iban_code`, `class.date_of_birth` y `class.name` sobre las columnas correctas.",
+        "Dos etiquetas personalizadas, `pii_cedula_identidad` y `pii_texto_libre`, para lo que ninguna clase del sistema cubre.",
+        "Copias `*_protegida` donde las columnas etiquetadas aparecen enmascaradas, salvo para el grupo `auditoria_pii`.",
+        "Claridad sobre qué hace por debajo la clasificación automática de Databricks."
+      ],
+      "prerequisites": [
+        "Tarea 1 terminada.",
+        "Free Edition suele mostrar que Data Classification nativo no está disponible. El notebook lo comprueba y, si falta, ejecuta un escáner equivalente. Con cualquiera de los dos caminos terminan con las mismas etiquetas."
+      ],
+      "sections": [
+        {
+          "title": "A. Comprobar si Data Classification nativo está disponible",
+          "steps": [
+            "Abran `notebooks/02_clasificacion_datos` y elijan cómputo **Serverless**.",
+            "Ejecuten las celdas hasta el paso 1. La celda llama a la API de Data Classification sobre el catálogo `taller_gobierno` e imprime **DISPONIBLE** o **NO DISPONIBLE**.",
+            "Si salió DISPONIBLE: abran **Catalog > taller_gobierno > Details** y confirmen que Data Classification está activo. Los primeros resultados tardan unos minutos. Salten al paso 4 del notebook.",
+            "Si salió NO DISPONIBLE: sigan con la sección B. Es el mismo ejercicio hecho a mano."
+          ],
+          "note": "En un workspace empresarial, Data Classification se activa por catálogo y Databricks escribe las etiquetas `class.*` solo, sin escáner propio. Aquí lo hacemos a mano porque Free Edition no incluye la capacidad.",
+          "docs": [
+            {
+              "label": "Data Classification",
+              "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/data-classification"
+            }
+          ]
+        },
+        {
+          "title": "B. El escáner del taller",
+          "intro": "Tomamos una muestra de 300 valores de cada columna de texto y la comparamos contra reglas. Una columna se etiqueta cuando al menos el 80% de su muestra cumple la regla. Ese umbral tolera los valores sucios que sembramos.",
+          "steps": [
+            "Ejecuten el paso 2 del notebook. Imprime, columna por columna, el porcentaje de la muestra que cumplió cada regla.",
+            "Revisen `bitacora_contactos.nota`: es texto libre con datos personales dentro de la frase. Ninguna expresión regular simple lo encuentra, por eso usamos `ai_classify` y una etiqueta personalizada.",
+            "Ejecuten el paso 3. Escribe las etiquetas con `ALTER TABLE ... ALTER COLUMN ... SET TAGS`."
+          ],
+          "expected": "Nueve columnas etiquetadas: `correo`, `telefono`, `fecha_nacimiento`, `nombre`, `apellido`, `cedula`, `numero_cuenta`, `numero_tarjeta` y `nota`. La consulta del paso 4 las lista desde `information_schema.column_tags`.",
+          "note": "Unity Catalog reserva el prefijo `class.` para las clases del sistema. Por eso las reglas propias del taller usan `pii_`.",
+          "docs": [
+            {
+              "label": "Etiquetas en Unity Catalog",
+              "url": "https://docs.databricks.com/aws/en/database-objects/tags"
+            }
+          ]
+        },
+        {
+          "title": "C. Ver las etiquetas en la interfaz",
+          "steps": [
+            "Abran **Catalog > taller_gobierno > banco > clientes**.",
+            "En la pestaña **Overview** ubiquen la columna `correo`: debe mostrar la etiqueta `class.email_address`.",
+            "Repitan con `cedula` (`pii_cedula_identidad`) y `fecha_nacimiento` (`class.date_of_birth`).",
+            "Abran `transacciones` y confirmen `numero_tarjeta` con `class.credit_card`.",
+            "En la celda de cobertura del notebook revisen qué columnas de texto quedaron sin etiqueta. Una columna sin etiqueta puede ser un dato no personal o un falso negativo, y esa decisión la toma el equipo de gobierno."
+          ]
+        },
+        {
+          "title": "D. Proteger lo encontrado con una máscara",
+          "intro": "Aplicamos una máscara a todas las columnas que tienen una etiqueta `class.*` o `pii_*`, sin escribir una regla por columna. El notebook lo hace sobre copias `*_protegida`, no sobre las tablas originales.",
+          "steps": [
+            "Ejecuten el paso 5. Crea la función `seguridad.enmascarar` y las tablas `clientes_protegida`, `transacciones_protegida` y `bitacora_contactos_protegida`.",
+            "Consulten una tabla protegida. Mientras no sean miembros del grupo `auditoria_pii`, ven asteriscos en las columnas etiquetadas.",
+            "Ejecuten la celda siguiente: crea el grupo `auditoria_pii` en su workspace y los agrega.",
+            "Vuelvan a consultar. Ahora ven el valor completo. Si todavía ven asteriscos, esperen un minuto: la membresía de grupos se guarda en caché."
+          ],
+          "code": "SELECT id_cliente, nombre, cedula, correo, telefono\nFROM taller_gobierno.banco.clientes_protegida\nLIMIT 10",
+          "codeLabel": "Consulta de verificación",
+          "note": "La máscara va sobre copias porque también aplica al motor de DQX Studio y a los monitores. Si la pusieran sobre la tabla original, esos productos medirían la calidad de valores enmascarados y reportarían resultados falsos.",
+          "docs": [
+            {
+              "label": "Máscaras de columna",
+              "url": "https://docs.databricks.com/aws/en/tables/row-and-column-filters"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "monitoreo",
+      "index": 3,
+      "title": "Data Quality Monitoring: calidad en reposo",
+      "subtitle": "Anomaly detection por esquema y Data Profiling con métricas de negocio.",
+      "product": "Data Quality Monitoring",
+      "icon": "📈",
+      "color": "#315AA6",
+      "estimatedMinutes": 60,
+      "mode": "Notebook + Interfaz",
+      "description": "Estas dos capacidades miran las tablas después de que los datos aterrizaron. Anomaly detection vigila un esquema completo sin reglas: avisa si una tabla deja de actualizarse o recibe mucho menos de lo habitual. Data Profiling calcula estadísticas por columna y por corte, y le sumamos métricas propias como el índice de mora.",
+      "outcomes": [
+        "Anomaly detection activo sobre `taller_gobierno.banco`.",
+        "Un monitor de Data Profiling sobre `prestamos` con serie mensual, segmentación por país y producto, y cinco métricas personalizadas.",
+        "Las tablas `prestamos_profile_metrics` y `prestamos_drift_metrics` en el esquema `calidad`.",
+        "El salto del índice de mora visible en la serie, aunque ninguna fila individual tenga un error."
+      ],
+      "prerequisites": [
+        "Tarea 1 terminada.",
+        "La primera corrida del monitor de profiling tarda entre 10 y 15 minutos en Free Edition. Planeen hacer la tarea 4 mientras esperan."
+      ],
+      "sections": [
+        {
+          "title": "A. Activar Anomaly detection sobre el esquema",
+          "steps": [
+            "Abran `notebooks/03_monitoreo_calidad` con cómputo **Serverless**.",
+            "Ejecuten el paso 1. Crea un monitor de esquema con `anomaly_detection_config` vacío y devuelve su configuración.",
+            "Abran **Catalog > taller_gobierno > banco** y la pestaña **Quality** para ver el estado de cada tabla."
+          ],
+          "note": "El modelo aprende el ritmo normal de cada tabla, y para eso necesita historia. En un taller de un día el estado correcto es sin anomalías. Lo que sí ven en pantalla es qué tabla vigila y con qué cadencia.",
+          "docs": [
+            {
+              "label": "Anomaly detection",
+              "url": "https://docs.databricks.com/aws/en/data-quality-monitoring/anomaly-detection/"
+            }
+          ]
+        },
+        {
+          "title": "B. Crear el monitor de Data Profiling sobre prestamos",
+          "intro": "`prestamos` guarda 500 préstamos por cada corte mensual de los últimos 6 meses. Es la tabla ideal para una serie de tiempo.",
+          "steps": [
+            "Ejecuten el paso 2 del notebook. Crea el monitor con `fecha_corte` como columna de tiempo y granularidad de 1 mes.",
+            "El monitor segmenta por `pais` y `producto`, de modo que cada métrica se calcula también por país y por producto.",
+            "Las cinco métricas personalizadas son `saldo_total`, `saldo_vencido_90`, `pct_sin_pais` (agregadas), `indice_mora_90` (derivada: saldo vencido sobre saldo total) y `delta_indice_mora_90` (deriva contra el corte anterior).",
+            "Databricks lanza solo la primera corrida al crear el monitor. Si intentan un refresh manual mientras esa corrida está pendiente, la API lo rechaza. El notebook espera con una consulta periódica."
+          ],
+          "note": "Una métrica derivada o de deriva cita a las otras por nombre, sin llaves. Las de deriva comparan `{{current_df}}` contra `{{base_df}}`. En mis pruebas la primera corrida produjo solo las ventanas de los dos cortes más recientes, aunque la tabla guarda seis. Por eso el incidente está sembrado entre esos dos cortes.",
+          "docs": [
+            {
+              "label": "Data Profiling",
+              "url": "https://docs.databricks.com/aws/en/data-quality-monitoring/data-profiling/"
+            }
+          ]
+        },
+        {
+          "title": "C. Leer las métricas",
+          "steps": [
+            "Cuando la corrida termine, ejecuten el paso 3. La primera consulta lista el `indice_mora_90` por corte.",
+            "Busquen el salto. En el corte anterior, el índice ronda el 0,6%. En el último, cerca del 9%.",
+            "Ejecuten la consulta de deriva: `delta_indice_mora_90` mide el cambio contra el corte anterior.",
+            "Ejecuten la consulta por país. Identifiquen dónde se concentra la mora en el corte actual."
+          ],
+          "expected": "Ninguna regla de calidad de fila detecta este incidente porque cada préstamo es válido por separado. Solo se ve en la serie. Esa es la razón de ser del monitor."
+        },
+        {
+          "title": "D. Alimentar una tabla y romperla a propósito",
+          "intro": "Anomaly detection necesita una tabla que se actualice con regularidad para tener algo que aprender. El notebook 04 la mantiene viva y permite provocar un incidente.",
+          "steps": [
+            "Abran `notebooks/04_alimentar_y_romper`. Ejecútenlo con el widget `modo = normal`: agrega unas 500 transacciones con fecha de hoy.",
+            "Abran **Jobs & Pipelines > Create > Job**, tarea de tipo **Notebook** apuntando al 04, cómputo **Serverless**, parámetro `modo = normal`.",
+            "En **Add trigger** elijan **Scheduled**, cada hora.",
+            "Cuando quieran el incidente, cambien el parámetro a `pausa` (la tabla deja de recibir datos) o `volumen_bajo` (llegan 5 filas).",
+            "Miren **Catalog > taller_gobierno > banco > Quality** en los días siguientes para ver cómo el monitor reacciona."
+          ],
+          "note": "En Free Edition dejen este job como el único programado, porque hay un límite de jobs concurrentes."
+        }
+      ]
+    },
+    {
+      "id": "dqx-codigo",
+      "index": 4,
+      "title": "DQX: calidad en tránsito, con código",
+      "subtitle": "Perfilar, escribir reglas en YAML, separar válidos de cuarentena.",
+      "product": "DQX (Databricks Labs)",
+      "icon": "🧪",
+      "color": "#8B5A00",
+      "estimatedMinutes": 35,
+      "mode": "Notebook",
+      "description": "DQX es la librería open source de Databricks Labs para validar DataFrames y tablas fila por fila. A diferencia de los monitores de la tarea 3, aplica las reglas antes de escribir el destino y separa lo bueno de lo malo.",
+      "outcomes": [
+        "Reglas candidatas generadas por el perfilador de DQX sobre `clientes`.",
+        "Ocho reglas del negocio escritas como YAML, con criticidad `error` o `warn`.",
+        "Conteo de filas por regla, comparado con los errores sembrados de la tarea 1.",
+        "Las reglas guardadas en la tabla `calidad.dqx_checks`, el puente hacia DQX Studio."
+      ],
+      "prerequisites": [
+        "Tarea 1 terminada.",
+        "El notebook instala `databricks-labs-dqx==0.16.0` con `%pip` y reinicia Python."
+      ],
+      "sections": [
+        {
+          "title": "A. Dejar que DQX proponga reglas",
+          "steps": [
+            "Abran `notebooks/05_dqx_reglas` con cómputo **Serverless**.",
+            "Ejecuten la celda de instalación. Termina con un reinicio de Python, es normal.",
+            "Ejecuten el paso 1: `DQProfiler` mira nulos, rangos y valores frecuentes, y `DQGenerator` los traduce a reglas candidatas.",
+            "Revisen las propuestas. El rango de `ingreso_mensual` incluye los valores negativos porque el perfilador aprende también de los errores que ya trae la tabla. Y no propone nada sobre el formato de la cédula ni del correo: eso lo saben las personas del negocio."
+          ],
+          "docs": [
+            {
+              "label": "DQX en GitHub",
+              "url": "https://github.com/databrickslabs/dqx"
+            },
+            {
+              "label": "Documentación de DQX",
+              "url": "https://databrickslabs.github.io/dqx/"
+            }
+          ]
+        },
+        {
+          "title": "B. Escribir las reglas del negocio",
+          "steps": [
+            "En el paso 2 lean el YAML con las ocho reglas. Cada una tiene nombre, criticidad y una función con argumentos.",
+            "Fíjense en `is_in_list`: los valores de texto van con comillas simples dentro de las comillas del YAML (`\"'CR'\"`). DQX los interpreta como expresiones SQL, y `CR` sin comillas se lee como una columna.",
+            "Fíjense también en que `is_in_list` deja pasar los nulos. Para cubrirlos hace falta una regla `is_not_null_and_not_empty` sobre `pais`."
+          ],
+          "code": "- name: pais_operacion_del_banco\n  criticality: error\n  check:\n    function: is_in_list\n    arguments:\n      column: pais\n      allowed: [\"'CR'\", \"'GT'\", \"'HN'\", \"'NI'\", \"'SV'\", \"'PA'\"]",
+          "codeLabel": "Una de las reglas del notebook"
+        },
+        {
+          "title": "C. Aplicar, separar y contar",
+          "steps": [
+            "Ejecuten el paso 3. `apply_checks_by_metadata_and_split` devuelve dos DataFrames: `validos` y `cuarentena`.",
+            "Un registro con solo una advertencia (`warn`) pasa a `validos` y también aparece en `cuarentena`, con la regla que falló en `_warnings`.",
+            "Ejecuten el conteo por regla y compárenlo con la tabla de errores sembrados."
+          ],
+          "expected": "cédula nula 113 y cédula `N/A` 56 (169 en total), correo 92, país `XX` 52, ingreso negativo 53, fecha futura 29, `id_cliente` repetido 60."
+        },
+        {
+          "title": "D. Guardar las reglas en una tabla",
+          "steps": [
+            "Ejecuten el paso 4: guarda `clientes_validos`, `clientes_cuarentena` y las reglas en `taller_gobierno.calidad.dqx_checks`.",
+            "Comprueben con `SELECT * FROM taller_gobierno.calidad.dqx_checks`."
+          ],
+          "note": "Las reglas viven en una tabla y no en el código del pipeline. Gobierno las puede revisar y versionar, y el mismo conjunto se aplica en un job, en un pipeline declarativo o desde DQX Studio."
+        }
+      ]
+    },
+    {
+      "id": "studio-despliegue",
+      "index": 5,
+      "title": "Desplegar DQX Studio como una aplicación",
+      "subtitle": "Un notebook que instala la app, su base de datos y el job de revisión.",
+      "product": "Databricks Apps · Lakebase",
+      "icon": "🚀",
+      "color": "#6B3FA0",
+      "estimatedMinutes": 30,
+      "mode": "Notebook",
+      "description": "DQX Studio es una Databricks App donde las personas de negocio crean reglas de calidad, las aplican a tablas, las aprueban y ven resultados, sin escribir código. Está en Beta. Yo les dejo un notebook que hace el despliegue completo desde su workspace: no instalan nada en su computador.",
+      "outcomes": [
+        "La app `dqx-studio` corriendo en su workspace.",
+        "Un proyecto Lakebase (Postgres) que guarda reglas, tablas monitoreadas y aprobaciones.",
+        "El job `dqx-studio-task-runner`, que ejecuta cada perfilado y cada corrida de reglas como un service principal.",
+        "Cuatro esquemas nuevos en `taller_gobierno`: `dqx_studio`, `dqx_studio_tmp`, `dqx_studio_genie` y `dqx_studio_demo`."
+      ],
+      "prerequisites": [
+        "Tareas 1 y 4 terminadas (Studio usa el catálogo del taller y reutiliza las tablas).",
+        "Free Edition permite 3 apps y 3 proyectos Lakebase por workspace. Studio usa una app y un proyecto: borren alguno si ya tienen tres.",
+        "Free Edition permite un solo SQL warehouse. El notebook ajusta el bundle para reutilizar el que ya tienen."
+      ],
+      "sections": [
+        {
+          "title": "A. Ejecutar el notebook de despliegue",
+          "steps": [
+            "Abran `notebooks/06_desplegar_dqx_studio` con cómputo **Serverless**.",
+            "Dejen los widgets con sus valores por defecto: catálogo `taller_gobierno`, release `studio-v0.1.0`, app `dqx-studio`.",
+            "Seleccionen **Run all** y esperen entre 10 y 15 minutos. Casi todo el tiempo es la base Lakebase y el arranque de la app.",
+            "Al final, la última celda imprime la URL de la app y el estado de cada paso de configuración."
+          ],
+          "expected": "Estado general `ready` con los pasos identity, lakebase, configuration, unity_catalog, storage, warehouse, task_runner, wheels, migrations, activation, access y ai en `passed`. El paso `app_sharing` puede quedar en `warning`: Studio no puede leer con quién está compartida la app. El notebook ya la compartió con el grupo `users`, así que no hay nada que corregir.",
+          "docs": [
+            {
+              "label": "Databricks Apps",
+              "url": "https://docs.databricks.com/aws/en/dev-tools/databricks-apps/"
+            }
+          ]
+        },
+        {
+          "title": "B. Qué hizo el notebook por ustedes",
+          "intro": "Cada paso existe porque Studio lo exige. En un workspace empresarial los hace un administrador una vez.",
+          "steps": [
+            "Creó el service principal `dqx-studio-task-runner` y les dio el rol `servicePrincipal.user` sobre él, por la API de access control de la cuenta. Sin ese rol, el bundle no puede configurar un job que corra con esa identidad.",
+            "Descargó el Databricks CLI y el release `studio-v0.1.0` desde GitHub, y autenticó el CLI con la credencial del notebook.",
+            "Ajustó el bundle a Free Edition: quitó el SQL warehouse que el bundle quiere crear (el límite es uno) y apuntó la app y el job al que ya existe.",
+            "Ejecutó `bundle deploy` y después `bundle run`. El segundo paso aplica la configuración de la app; un `apps deploy` directo se salta ese paso y deja la app sin conexión a Lakebase.",
+            "Otorgó `USE CATALOG` y `CREATE SCHEMA` a la identidad de la app, y `USE CATALOG` al service principal de revisión y a todos los usuarios.",
+            "Corrió la verificación de configuración de Studio."
+          ]
+        },
+        {
+          "title": "C. Abrir Studio por primera vez",
+          "steps": [
+            "Abran la URL que imprimió el notebook, o **Compute > Apps > dqx-studio**.",
+            "Si la pantalla de configuración muestra pasos pendientes, seleccionen **Verify again** hasta que todos queden en verde.",
+            "Entren a la página principal. Como administradores del workspace tienen todos los roles de Studio: autor, aprobador y visor."
+          ],
+          "note": "Studio corre aquí en modo abierto, donde cualquier usuario del workspace puede entrar. En un workspace empresarial se limita a un grupo con `studio_user_group`."
+        }
+      ]
+    },
+    {
+      "id": "studio-reglas",
+      "index": 6,
+      "title": "Crear reglas de calidad en DQX Studio",
+      "subtitle": "Una regla, aplicada a una tabla, aprobada, ejecutada y con resultados.",
+      "product": "DQX Studio",
+      "icon": "✅",
+      "color": "#1F7A4D",
+      "estimatedMinutes": 60,
+      "mode": "Interfaz",
+      "description": "Recorremos el ciclo completo con las mismas tablas y los mismos errores sembrados de las tareas anteriores. Creamos reglas reutilizables, registramos la tabla `clientes`, aplicamos las reglas a sus columnas, pasamos por aprobación, ejecutamos y revisamos los registros que fallaron.",
+      "outcomes": [
+        "Tres reglas reutilizables en el registro: correo válido, país permitido e ingreso no negativo.",
+        "La tabla `taller_gobierno.banco.clientes` como tabla monitoreada, con las reglas aplicadas a sus columnas.",
+        "Una corrida con el puntaje de calidad y los registros fallidos.",
+        "Los números de Studio comparados contra el notebook 05 y contra los errores sembrados."
+      ],
+      "prerequisites": [
+        "Tarea 5 terminada y la app abierta.",
+        "Studio solo muestra datos a los que ya tienen acceso. Si una tabla no aparece, es un tema de permisos y no un fallo de la app."
+      ],
+      "sections": [
+        {
+          "title": "A. Perfilar la tabla y revisar las reglas sugeridas",
+          "steps": [
+            "En el menú izquierdo de Studio abran **Tables** y seleccionen **Monitor a table**.",
+            "Naveguen **taller_gobierno > banco > clientes** y regístrenla.",
+            "Abran la tabla y seleccionen **Run profile**. El perfilado lanza el job `dqx-studio-task-runner`: la primera vez tarda varios minutos mientras el cómputo serverless arranca.",
+            "Cuando termine, revisen las reglas que Studio sugiere. Son las mismas que generó `DQGenerator` en el notebook 05: `is_not_null_and_not_empty` sobre casi todas las columnas, y un `is_in_list` para `pais` con los valores que vio."
+          ],
+          "expected": "El perfilado cubre 5.000 filas y 16 columnas.",
+          "note": "Noten que la sugerencia para `pais` incluye `XX` entre los valores permitidos, porque el perfilador aprendió del dato sucio. Por eso las reglas las corrige y aprueba una persona."
+        },
+        {
+          "title": "B. Crear una regla reutilizable: correo válido",
+          "intro": "Una regla se define una vez y se aplica a tantas tablas y columnas como se quiera.",
+          "steps": [
+            "Abran **Rules** y seleccionen **New rule**.",
+            "En la pestaña **About** escriban el nombre `Correo con formato válido` y una descripción corta.",
+            "Elijan severidad por defecto **High** y dimensión **Validity**.",
+            "En la pestaña **Implementation** abran **Basic Rules** y busquen la verificación de expresión regular (`regex_match`).",
+            "Dejen la columna como ranura de texto y peguen la expresión de abajo.",
+            "Seleccionen **Save & submit** (o **Save as draft** y después **Submit for approval**)."
+          ],
+          "code": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+          "codeLabel": "Expresión regular",
+          "note": "Studio también permite describir la regla con palabras y dejar que la IA genere la verificación. Pruébenlo con 'el ingreso mensual nunca es negativo'."
+        },
+        {
+          "title": "C. Crear dos reglas más",
+          "steps": [
+            "Creen `País permitido`: severidad **High**, dimensión **Validity**, verificación **is in list** con los valores `'CR'`, `'GT'`, `'HN'`, `'NI'`, `'SV'` y `'PA'`, cada uno con comillas simples. Dejen fuera `XX`.",
+            "Creen `Ingreso no negativo`: severidad **Medium**, dimensión **Validity**, verificación de valor mínimo con límite `0` (en DQX, `is_not_less_than`).",
+            "Envíenlas a aprobación igual que la primera."
+          ],
+          "note": "Las comillas simples importan. DQX interpreta cada valor como una expresión SQL, y `CR` sin comillas se lee como una columna que no existe: la ejecución falla con `UNRESOLVED_COLUMN` y la corrida termina en `INTERNAL_ERROR`. Es el mismo detalle del notebook 05. Si les pasa, corrijan la regla, vuelvan a aprobarla y ejecuten de nuevo. Una regla recién enviada no está activa. Queda pendiente hasta que alguien con rol de aprobador la apruebe, y esa separación entre quien escribe y quien aprueba es parte del gobierno."
+        },
+        {
+          "title": "D. Aprobar las reglas",
+          "steps": [
+            "En el menú izquierdo abran **Review & Approve**.",
+            "Revisen cada regla pendiente, lean su definición y seleccionen **Approve**.",
+            "Vuelvan a **Rules** y confirmen que las tres figuran como **Approved**."
+          ],
+          "note": "Aquí ustedes son autores y aprobadores a la vez porque son administradores. En una empresa son personas distintas, y Studio puede exigirlo."
+        },
+        {
+          "title": "E. Aplicar las reglas a la tabla",
+          "steps": [
+            "Abran **Tables > clientes** y la pestaña **Apply Rules**.",
+            "Seleccionen **Apply rules**, elijan `Correo con formato válido` y asígnenla a la columna `correo`.",
+            "Repitan con `País permitido` sobre `pais` e `Ingreso no negativo` sobre `ingreso_mensual`.",
+            "En una de ellas fijen un **Pass threshold** de 98%: la tabla se considera sana si al menos el 98% de las filas pasa esa regla.",
+            "Seleccionen **Submit for review** para la tabla y después **Approve**."
+          ],
+          "note": "Una regla aplicada a una columna se convierte en una verificación. La misma regla puede producir muchas verificaciones en tablas y columnas distintas."
+        },
+        {
+          "title": "F. Ejecutar y leer los resultados",
+          "steps": [
+            "En la tabla `clientes` seleccionen **Run now**. La primera ejecución puede tardar varios minutos por el arranque del cómputo.",
+            "Cuando termine, abran **Results**. Verán el puntaje de calidad general, desglosado por dimensión, severidad, columna y regla.",
+            "Abran **Failed records**. Al pasar el cursor sobre un registro ven qué verificaciones falló, con severidad y motivo.",
+            "Comparen los conteos contra la tabla de errores sembrados."
+          ],
+          "expected": "Correo con formato válido: 92 filas fallidas de 5.000 (98,16% de aprobación). País permitido: 52 filas con `XX`. Ingreso no negativo: 53 filas. Son las mismas cifras del notebook 05.",
+          "note": "Una verificación que falla nunca borra ni edita sus datos. Los registros fallidos se copian a una tabla de cuarentena para que los revisen."
+        },
+        {
+          "title": "G. Para llevarse",
+          "steps": [
+            "Programen la tabla: en **Schedules** creen una ejecución diaria.",
+            "Revisen **Runs History** para ver todas las corridas, con su versión de reglas.",
+            "Prueben **Profile & generate** sobre `transacciones` para que Studio sugiera reglas desde los datos.",
+            "Comparen: el notebook 05 es el camino para ingenieros y pipelines; Studio es el camino para las personas que conocen el dato."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "limpieza",
+      "index": 7,
+      "title": "Limpieza y siguientes pasos",
+      "subtitle": "Borrar lo que desplegamos y llevar el patrón a su workspace empresarial.",
+      "product": "Notebooks · CLI",
+      "icon": "🧹",
+      "color": "#555F66",
+      "estimatedMinutes": 15,
+      "mode": "Notebook + Interfaz",
+      "description": "Free Edition limita las apps, los jobs y los warehouses. Esta tarea libera lo que usamos y resume qué cambia al llevar cada pieza a un workspace empresarial.",
+      "outcomes": [
+        "Workspace limpio: sin la app, sin la base Lakebase y sin el job de Studio.",
+        "Lista clara de qué es distinto en un workspace empresarial."
+      ],
+      "prerequisites": [
+        "Hayan terminado las tareas anteriores. Borrar es irreversible."
+      ],
+      "sections": [
+        {
+          "title": "A. Borrar DQX Studio",
+          "steps": [
+            "Abran **Compute > Apps**, seleccionen `dqx-studio` y **Delete**.",
+            "Abran **Jobs & Pipelines** y borren el job `dqx-studio-task-runner`.",
+            "Borren el proyecto Lakebase `dqx-studio-db` de forma permanente. En un notebook: `WorkspaceClient().api_client.do(\"DELETE\", \"/api/2.0/postgres/projects/dqx-studio-db\", query={\"purge\": \"true\"})`. Sin `purge` el nombre queda reservado en una papelera y un nuevo despliegue falla; el notebook 06 purga ese caso solo.",
+            "Ejecuten el SQL de abajo para borrar los cuatro esquemas de Studio."
+          ],
+          "code": "DROP SCHEMA IF EXISTS taller_gobierno.dqx_studio CASCADE;\nDROP SCHEMA IF EXISTS taller_gobierno.dqx_studio_tmp CASCADE;\nDROP SCHEMA IF EXISTS taller_gobierno.dqx_studio_genie CASCADE;\nDROP SCHEMA IF EXISTS taller_gobierno.dqx_studio_demo CASCADE;",
+          "codeLabel": "SQL de limpieza de Studio"
+        },
+        {
+          "title": "B. Borrar los monitores y el catálogo",
+          "steps": [
+            "Pausen o borren el job del notebook 04 si lo programaron.",
+            "Abran **Catalog > taller_gobierno > banco > Quality** y desactiven Anomaly detection.",
+            "Abran `prestamos > Quality` y borren el monitor de Data Profiling.",
+            "Si quieren borrar todo el taller, ejecuten el SQL de abajo."
+          ],
+          "code": "DROP CATALOG IF EXISTS taller_gobierno CASCADE;",
+          "codeLabel": "Borra todo el catálogo del taller"
+        },
+        {
+          "title": "C. Qué cambia en un workspace empresarial",
+          "steps": [
+            "Data Classification nativo está disponible: se activa por catálogo y Databricks etiqueta solo. El escáner del notebook 02 deja de hacer falta, pero las etiquetas `class.*` y las máscaras se escriben igual.",
+            "Las etiquetas gobernadas (governed tags) permiten limitar quién puede asignar cada valor, y las políticas ABAC se escriben sobre ellas en vez de una función por tabla.",
+            "Data Profiling y Anomaly detection corren sin los límites de cómputo de Free Edition, y puede activarse Anomaly detection por catálogo.",
+            "DQX Studio se instala desde el Marketplace o con el bundle sin el parche del warehouse, y se limita a un grupo con `studio_user_group` en vez del modo abierto.",
+            "Las reglas aprobadas en Studio se pueden cargar desde un job o un pipeline con `TableChecksStorageConfig`, y así el mismo conjunto de reglas gobierna la ingesta y el reposo."
+          ]
+        }
+      ]
+    }
+  ]
+}
